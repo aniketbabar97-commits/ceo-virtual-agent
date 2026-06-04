@@ -1058,7 +1058,7 @@ def run_degraded_ceo_cycle(config: Dict, goal: Optional[str] = None) -> Dict:
 
     # === FREE RESEARCH ===
     log_action("[Degraded] Performing free ethical research with DuckDuckGo...")
-    research_query = f"profitable faceless YouTube niches 2026 low competition high RPM affiliate digital products {goal[:60]}"
+    research_query = "faceless YouTube 2026 profitable niches low competition high RPM ideas"
     try:
         if hasattr(internet_search, '_run'):
             research = internet_search._run(query=research_query, max_results=8)
@@ -1081,15 +1081,16 @@ def run_degraded_ceo_cycle(config: Dict, goal: Optional[str] = None) -> Dict:
     # === Smarter rule-based planning (uses research + cycle + approvals to vary) ===
     log_action("[Degraded] CEO performing dynamic rule-based planning (varies by research + cycle)...")
 
-    # Extract concrete ideas from research (simple parsing)
+    # Extract concrete ideas from research (robust parsing for YouTube niches)
     ideas = []
     for line in research.split("\n"):
-        if "Title:" in line or "profitable" in line.lower() or "niche" in line.lower() or "RPM" in line:
-            clean = line.replace("Title:", "").strip()[:80]
-            if len(clean) > 10 and clean not in ideas:
+        line_lower = line.lower()
+        if any(kw in line_lower for kw in ["faceless", "youtube", "niche", "rpm", "profitable"]):
+            clean = line.replace("Title:", "").replace("Link:", "").strip()[:80]
+            if len(clean) > 15 and "dictionary" not in clean.lower() and clean not in ideas:
                 ideas.append(clean)
     if not ideas:
-        ideas = ["Faceless productivity tips", "AI tools for beginners 2026", "Low-capital side hustles"]
+        ideas = ["Faceless productivity tips 2026", "AI tools for beginners YouTube", "Low-capital side hustles faceless"]
 
     focus_idea = ideas[0] if ideas else "faceless YouTube in high-demand niche"
     if cycle_num % 3 == 0 and len(ideas) > 1:
@@ -1098,7 +1099,12 @@ def run_degraded_ceo_cycle(config: Dict, goal: Optional[str] = None) -> Dict:
     # Decide action based on state (prevents repetition)
     if approved_youtube:
         action = "EXECUTE approved YouTube channel"
-        channel_name = approved_youtube.get("owner_response", "AI Productivity Daily 2026").split(".")[0][:40]
+        resp = approved_youtube.get("owner_response", "AI Productivity Daily 2026")
+        # Better parsing: take quoted name or first sensible phrase
+        if '"' in resp:
+            channel_name = resp.split('"')[1][:40]
+        else:
+            channel_name = resp.split(".")[0].replace("Approved by Owner with no additional", "").strip()[:40] or "My Faceless Channel 2026"
         plan = f"""DEGRADED KEYLESS PLAN (EXECUTING APPROVED):
 - Using approved channel: {channel_name}
 - Research-backed idea: {focus_idea}

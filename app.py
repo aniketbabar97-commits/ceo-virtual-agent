@@ -299,12 +299,23 @@ assets = sorted([f for f in gen_path.glob("*") if f.is_file()], key=lambda x: x.
 if assets:
     for asset in assets:
         with st.expander(f"📄 {asset.name} (click to preview)"):
+            suffix = asset.suffix.lower()
             try:
-                content = asset.read_text(encoding='utf-8')[:2500]
-                if asset.suffix in ['.html', '.htm']:
+                if suffix in ['.gif', '.png', '.jpg', '.jpeg']:
+                    st.image(str(asset), use_column_width=True)
+                    st.caption("Animated GIF / image — ready to use as thumbnail or video placeholder.")
+                elif suffix == '.mp3':
+                    st.audio(str(asset))
+                    st.caption("Voiceover MP3 — generated with free gTTS. Ready for video or podcast.")
+                elif suffix == '.mp4':
+                    st.video(str(asset))
+                    st.caption("MP4 video — ready for YouTube after Owner approval.")
+                elif suffix in ['.html', '.htm']:
+                    content = asset.read_text(encoding='utf-8', errors='ignore')[:3000]
                     st.components.v1.html(content, height=400, scrolling=True)
                 else:
-                    st.code(content, language="markdown" if asset.suffix in ['.md', '.txt'] else None)
+                    content = asset.read_text(encoding='utf-8', errors='ignore')[:2500]
+                    st.code(content, language="markdown" if suffix in ['.md', '.txt'] else None)
                 st.caption(f"Full path: {asset} | Size: {asset.stat().st_size} bytes | Deploy this yourself (e.g. copy HTML to free host, post article to blog, use as email copy).")
             except Exception as e:
                 st.error(f"Preview error: {e}")
