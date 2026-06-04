@@ -10,7 +10,9 @@ services:
     envVars:
       # Add your secrets here in the Render dashboard (do NOT commit keys)
       # GROQ_API_KEY: your-key-here
-      # LLM_PROVIDER: groq
+      # GOOGLE_API_KEY: your-free-gemini-key-here (get at aistudio.google.com/app/apikey - best free tier)
+      # LLM_PROVIDER: groq   # or gemini
+      # No keys? System auto uses DEGRADED KEYLESS mode (still fully functional for research/assets/approvals)
     # For persistent storage of generated content and memory (recommended for production)
     # disk:
     #   name: ceo-data

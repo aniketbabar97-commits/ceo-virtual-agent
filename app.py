@@ -50,7 +50,7 @@ st.markdown("""
 
 st.title("💼 CEO Virtual Agent")
 st.markdown("**Thinks like a CEO. Hires specialist agents. Scrapes the internet ethically. Learns & compounds. Builds real revenue autonomously.**")
-st.caption("Web-based • Cloud-ready • Open-source models (Groq free tier or Ollama local) • Zero OpenAI dependency • Made for non-coders")
+st.caption("Web-based • Cloud-ready • Open-source models (Groq/Gemini free tiers, Ollama local, or DEGRADED KEYLESS mode - works with ZERO API keys!) • Zero OpenAI dependency • Made for non-coders • Never stops without keys")
 
 # ============== SIDEBAR: CONFIG & QUICK ACTIONS ==============
 with st.sidebar:
@@ -64,6 +64,9 @@ with st.sidebar:
             secrets_config['api_key'] = st.secrets['GROQ_API_KEY']
             secrets_config['provider'] = st.secrets.get('LLM_PROVIDER', 'groq')
             secrets_config['model'] = st.secrets.get('LLM_MODEL', 'llama-3.3-70b-versatile')
+        if hasattr(st, 'secrets') and 'GOOGLE_API_KEY' in st.secrets:
+            secrets_config['api_key'] = st.secrets['GOOGLE_API_KEY']
+            secrets_config['provider'] = 'gemini'
         if hasattr(st, 'secrets') and 'OLLAMA_BASE_URL' in st.secrets:
             secrets_config['ollama_base_url'] = st.secrets['OLLAMA_BASE_URL']
     except Exception:
@@ -75,14 +78,44 @@ with st.sidebar:
         config.update(secrets_config)
         st.caption("Using secrets from cloud deployment (secure).")
     
+    # Expanded providers: now includes Gemini (best free tier 2026), degraded keyless, etc.
+    provider_options = ["groq", "gemini", "together_ai", "ollama", "degraded (keyless - zero cost, always works)"]
+    current_prov = config.get("provider", "groq")
+    if current_prov == "degraded":
+        current_prov = "degraded (keyless - zero cost, always works)"
+    try:
+        default_idx = provider_options.index(current_prov)
+    except:
+        default_idx = 0
+    
     provider = st.selectbox(
-        "LLM Provider (Open Models)",
-        ["groq", "ollama"],
-        index=0 if config.get("provider") == "groq" else 1,
-        help="Groq: Fast cloud, free generous tier, Llama/Qwen models. Ollama: 100% local & free on your machine (install from ollama.com first)."
+        "LLM Provider (Open Models + Keyless Fallback)",
+        provider_options,
+        index=default_idx,
+        help="""Groq: Fastest free tier (Llama). 
+Gemini: Google's BEST free tier 2026 (Gemini Flash, generous limits, no card often - RECOMMENDED if no key yet).
+Together AI / others: Good open models, may need free trial key.
+Ollama: 100% local free unlimited (run on your PC).
+DEGRADED (keyless): NO API key needed ever! Uses free DuckDuckGo + local gTTS/PIL for research, voice, videos, approvals. CEO still runs, generates assets, learns basics. Add key later for full AI brain. NEVER STOPS without keys."""
     )
     
-    if provider == "groq":
+    # Normalize provider name
+    if "degraded" in provider.lower():
+        provider = "degraded"
+        api_key = ""
+        model = "keyless"
+        ollama_url = ""
+        st.info("✅ DEGRADED KEYLESS MODE selected. System will run fully without any API keys or LLM. Perfect if you have no keys. Real assets + research + approvals still generated!")
+    elif provider == "gemini":
+        api_key = st.text_input(
+            "Google/Gemini API Key (FREE at aistudio.google.com/app/apikey)",
+            value=config.get("api_key", ""),
+            type="password",
+            help="Sign up FREE with Google (no credit card for free tier). Go to Google AI Studio → Get API key. Paste here. Very generous daily limits for Flash models. Best free option for full intelligence."
+        )
+        model = "gemini-1.5-flash"
+        ollama_url = ""
+    elif provider == "groq":
         api_key = st.text_input(
             "Groq API Key (free at groq.com)",
             value=config.get("api_key", ""),
@@ -96,7 +129,16 @@ with st.sidebar:
             help="70B models are smartest for CEO strategy. Start with versatile."
         )
         ollama_url = ""
-    else:
+    elif provider == "together_ai":
+        api_key = st.text_input(
+            "Together AI API Key (free trial at together.ai)",
+            value=config.get("api_key", ""),
+            type="password",
+            help="Sign up for free credits/trial. Good for Llama etc. Use Gemini free if you want zero cost."
+        )
+        model = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
+        ollama_url = ""
+    else:  # ollama
         api_key = ""
         model = st.text_input(
             "Ollama Model Name",
@@ -121,6 +163,12 @@ with st.sidebar:
         help="Safety limit for 'Run Autonomous' button."
     )
     
+    degraded_force = st.checkbox(
+        "Force Degraded Keyless Mode (ignore keys, always use zero-cost mode)",
+        value=config.get("degraded_mode", False),
+        help="Check this to force keyless mode even if keys are set. Useful for testing or to avoid any token use."
+    )
+    
     if st.button("💾 Save Configuration", type="primary"):
         new_config = {
             "provider": provider,
@@ -128,10 +176,11 @@ with st.sidebar:
             "model": model,
             "ollama_base_url": ollama_url,
             "autonomous_interval_minutes": interval,
-            "max_cycles_per_run": max_cycles
+            "max_cycles_per_run": max_cycles,
+            "degraded_mode": degraded_force
         }
         save_config(new_config)
-        st.success("Config saved! Changes apply to next cycle.")
+        st.success("Config saved! Changes apply to next cycle. If degraded selected, CEO will run keyless (never stops).")
         st.rerun()
     
     st.divider()

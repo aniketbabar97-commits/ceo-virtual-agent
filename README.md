@@ -63,6 +63,9 @@ Built for **non-coders**. Fully web-based dashboard (Streamlit). Cloud-deployabl
 5. (Optional) Create `.env` file for secrets (edit with notepad):
    ```
    GROQ_API_KEY=your_groq_key_here
+   # OR for free Gemini (recommended if no Groq):
+   # GOOGLE_API_KEY=your_gemini_key_here
+   # For keyless degraded: no keys needed at all
    ```
 
 ### Step 3: Run the Web Dashboard (Your Control Center - Accessible on this computer)
@@ -129,8 +132,10 @@ streamlit run app.py
      - **Start Command**: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`
      - **Plan**: Free (or Starter ~$7/mo for no sleep + persistent disk)
    - Click "Advanced" → **Environment Variables** and add:
-     - `GROQ_API_KEY` = your Groq key (from groq.com)
-     - (Optional) `LLM_PROVIDER` = `groq`
+     - `GROQ_API_KEY` = your Groq key (from groq.com)   OR
+     - `GOOGLE_API_KEY` = your FREE Gemini key (from https://aistudio.google.com/app/apikey - best free tier 2026, no card)
+     - (Optional) `LLM_PROVIDER` = `groq` or `gemini`
+     - For zero keys: leave blank. Dashboard auto-falls back to DEGRADED KEYLESS mode (research, voice, video, approvals still work; CEO never stops). Add key anytime for full LLM power.
    - Click "Create Web Service".
 
 5. **Your live URL**:

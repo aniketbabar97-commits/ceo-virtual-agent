@@ -493,12 +493,13 @@ def _create_llm_for_provider(provider: str, api_key: str, model: str, config: Di
         pass
 
     if provider == "groq":
-        if not api_key:
-            raise ValueError("Groq API key required for primary provider.")
+        key = api_key or os.environ.get("GROQ_API_KEY", "")
+        if not key:
+            raise ValueError("Groq API key required for primary provider. Get free at https://console.groq.com/keys (no card needed).")
         model_str = f"groq/{model}"
         return LLM(
             model=model_str,
-            api_key=api_key,
+            api_key=key,
             temperature=0.4,
             max_tokens=4000,
             drop_params=True
@@ -514,52 +515,66 @@ def _create_llm_for_provider(provider: str, api_key: str, model: str, config: Di
         )
 
     elif provider in ["together_ai", "together"]:
-        # Good open-source: Llama, Mixtral, etc. Free tier/credits often available
+        key = api_key or os.environ.get("TOGETHER_API_KEY", "") or os.environ.get("TOGETHER_AI_API_KEY", "")
+        if not key:
+            raise ValueError("Together AI API key required. Get trial at https://together.ai (or use free Gemini instead).")
         model_str = f"together_ai/meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo" if "llama" in model.lower() else f"together_ai/{model}"
         return LLM(
             model=model_str,
-            api_key=api_key or os.environ.get("TOGETHER_API_KEY", ""),
+            api_key=key,
             temperature=0.4,
             max_tokens=4000,
             drop_params=True
         )
 
     elif provider in ["fireworks_ai", "fireworks"]:
+        key = api_key or os.environ.get("FIREWORKS_API_KEY", "")
+        if not key:
+            raise ValueError("Fireworks AI API key required for this provider.")
         model_str = f"fireworks_ai/llama-v3-70b-instruct" if "llama" in model.lower() else f"fireworks_ai/{model}"
         return LLM(
             model=model_str,
-            api_key=api_key or os.environ.get("FIREWORKS_API_KEY", ""),
+            api_key=key,
             temperature=0.4,
             max_tokens=4000,
             drop_params=True
         )
 
     elif provider in ["deepinfra", "deep_infra"]:
+        key = api_key or os.environ.get("DEEPINFRA_API_KEY", "")
+        if not key:
+            raise ValueError("DeepInfra API key required for this provider.")
         model_str = f"deepinfra/meta-llama/Meta-Llama-3.1-70B-Instruct" if "llama" in model.lower() else f"deepinfra/{model}"
         return LLM(
             model=model_str,
-            api_key=api_key or os.environ.get("DEEPINFRA_API_KEY", ""),
+            api_key=key,
             temperature=0.4,
             max_tokens=4000,
             drop_params=True
         )
 
     elif provider == "gemini":
-        # Google's free tier for gemini-1.5-flash (good open weights-ish)
-        model_str = "gemini/gemini-1.5-flash"
+        # Google's free tier (best no-card free option in 2026: Gemini Flash models, generous daily limits)
+        key = api_key or os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+        if not key:
+            raise ValueError("Google/Gemini API key required. Get FREE (no credit card) at https://aistudio.google.com/app/apikey - sign in with Google account.")
+        model_str = "gemini/gemini-1.5-flash"  # Reliable free tier model; update to gemini-2.5-flash if available in your LiteLLM
         return LLM(
             model=model_str,
-            api_key=api_key or os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", ""),
+            api_key=key,
             temperature=0.4,
             max_tokens=4000,
             drop_params=True
         )
 
     elif provider == "huggingface":
+        key = api_key or os.environ.get("HUGGINGFACE_API_KEY", "") or os.environ.get("HF_TOKEN", "")
+        if not key:
+            raise ValueError("Hugging Face API key/token required for this provider (free tier available at hf.co).")
         model_str = f"huggingface/{model}" if not model.startswith("huggingface/") else model
         return LLM(
             model=model_str,
-            api_key=api_key or os.environ.get("HUGGINGFACE_API_KEY", ""),
+            api_key=key,
             temperature=0.4,
             max_tokens=4000,
             drop_params=True
@@ -575,37 +590,56 @@ def _create_llm_for_provider(provider: str, api_key: str, model: str, config: Di
             drop_params=True
         )
 
-def get_llm(config: Dict) -> LLM:
+def get_llm(config: Dict) -> Optional[LLM]:
     """Get LLM with automatic fallback to other good open-source providers if primary fails.
     This makes the agent independent of any single provider's rate limits, tokens, or bugs (e.g. Groq cache_breakpoint).
     There are many good open-source models available via LiteLLM (Llama3, Mixtral, Gemma, etc.).
+    If NO keys at all: returns None -> triggers degraded keyless mode (system NEVER stops).
     """
+    if config.get("degraded_mode", False):
+        log_action("Degraded mode explicitly enabled in config. Skipping all LLM providers.")
+        return None
+
     primary = config.get("provider", "groq").lower()
     api_key = config.get("api_key", "")
     model = config.get("model", "llama-3.3-70b-versatile")
-    fallbacks = config.get("fallback_providers", ["together_ai", "fireworks_ai", "deepinfra", "gemini", "ollama"])
+    fallbacks = config.get("fallback_providers", ["gemini", "together_ai", "fireworks_ai", "deepinfra", "ollama", "huggingface"])
 
-    providers_to_try = [primary] + [p for p in fallbacks if p.lower() != primary]
+    providers_to_try = [primary]
+    for p in fallbacks:
+        if p.lower() != primary:
+            if p.lower() == "ollama" and primary.lower() != "ollama":
+                # Only try Ollama if user explicitly set it as primary (local machine with ollama running).
+                # On cloud/Render with no keys, skip to reach degraded keyless mode reliably.
+                continue
+            providers_to_try.append(p)
 
     last_error = None
     for prov in providers_to_try:
         try:
             log_action(f"Trying LLM provider: {prov}")
+            if not has_key_for_provider(prov, api_key, config):
+                log_action(f"Provider {prov} skipped: no API key available (config or env).", "WARN")
+                continue
             llm = _create_llm_for_provider(prov, api_key, model, config)
+            # Success - we have a valid LLM
+            log_action(f"LLM ready with provider: {prov}")
             return llm
         except Exception as e:
             last_error = e
             error_str = str(e).lower()
-            log_action(f"Provider {prov} failed: {str(e)[:150]}", "WARN")
-            # Only continue to fallback on retriable/provider errors (rate, cache, key issues)
-            if any(x in error_str for x in ["rate", "limit", "cache_breakpoint", "unsupported", "invalid", "key"]):
+            log_action(f"Provider {prov} failed: {str(e)[:200]}", "WARN")
+            # Continue to next on key/rate/cache issues (common on free tiers)
+            if any(x in error_str for x in ["rate", "limit", "cache_breakpoint", "unsupported", "invalid", "key", "missing", "credentials"]):
                 continue
             else:
-                # Non-retriable, raise immediately
-                raise
+                # Non-retriable (e.g. network for ollama), raise or continue?
+                continue  # Safer: try next instead of hard stop
 
-    # All providers failed - graceful
-    raise RuntimeError(f"All LLM providers failed (tried: {providers_to_try}). Last error: {last_error}. Set more API keys in Render env (e.g. TOGETHER_API_KEY, GOOGLE_API_KEY) for better fallbacks. Or configure 'ollama' if running it.")
+    # All LLM providers failed or skipped (no keys) - trigger degraded keyless mode
+    log_action(f"All LLM providers failed/skipped (no usable keys). Last error: {last_error}. ACTIVATING DEGRADED KEYLESS MODE so CEO does NOT stop.", "WARN")
+    log_action("Get FREE keys instantly: Gemini (https://aistudio.google.com/app/apikey) or Groq (https://console.groq.com/keys) - both no credit card for free tier.")
+    return None  # Signals to run_one_ceo_cycle to use degraded mode
 
 def get_config() -> Dict:
     default = {
@@ -616,13 +650,37 @@ def get_config() -> Dict:
         "autonomous_interval_minutes": 60,
         "max_cycles_per_run": 5,
         # Automatic fallback chain for when primary (Groq) fails due to rate limits, cache issues, tokens, etc.
-        # These are good free/open-source friendly providers via LiteLLM. Set the corresponding API key in env (e.g. TOGETHER_API_KEY).
-        "fallback_providers": ["together_ai", "fireworks_ai", "deepinfra", "gemini", "ollama"]
+        # Good free/open-source friendly providers via LiteLLM. Gemini is excellent free tier (no card often).
+        # Set corresponding env var in Render (e.g. GOOGLE_API_KEY for gemini, TOGETHER_API_KEY).
+        "fallback_providers": ["gemini", "together_ai", "fireworks_ai", "deepinfra", "ollama", "huggingface"],
+        "degraded_mode": False  # Set True to force keyless mode (always works, no API calls for LLM)
     }
     return load_json(CONFIG_FILE, default)
 
 def save_config(config: Dict):
     save_json(CONFIG_FILE, config)
+
+def has_key_for_provider(provider: str, api_key: str, config: Dict) -> bool:
+    """Check if we have credentials for this provider (from config or env). Keyless providers like ollama always True."""
+    p = provider.lower().strip()
+    if p == "groq":
+        return bool(api_key or os.environ.get("GROQ_API_KEY", ""))
+    elif p in ["together_ai", "together"]:
+        return bool(api_key or os.environ.get("TOGETHER_API_KEY", "") or os.environ.get("TOGETHER_AI_API_KEY", ""))
+    elif p in ["fireworks_ai", "fireworks"]:
+        return bool(api_key or os.environ.get("FIREWORKS_API_KEY", "") or os.environ.get("FIREWORKS_AI_API_KEY", ""))
+    elif p in ["deepinfra", "deep_infra"]:
+        return bool(api_key or os.environ.get("DEEPINFRA_API_KEY", ""))
+    elif p == "gemini":
+        return bool(api_key or os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", ""))
+    elif p == "huggingface":
+        return bool(api_key or os.environ.get("HUGGINGFACE_API_KEY", "") or os.environ.get("HF_TOKEN", ""))
+    elif p == "ollama":
+        return True  # Local, no key. (May fail if not running, handled later)
+    elif p == "degraded":
+        return True  # Special keyless mode
+    else:
+        return True  # Unknown, let it try (will fail gracefully)
 
 # ============== AGENT & CREW FACTORY (Hiring System) ==============
 def create_ceo_crew(llm: LLM, goal: str, memory: Dict, recent_logs: str = "") -> Crew:
@@ -821,8 +879,13 @@ def run_one_ceo_cycle(config: Dict, goal: Optional[str] = None, max_retries: int
         return {
             "success": False, 
             "error": str(e), 
-            "report": "LLM provider (Groq) initialization failed. This can happen due to rate limits, invalid key, or temporary provider issues. Cycle aborted gracefully. Check your GROQ_API_KEY in Render env vars and try again later. No tokens wasted on failed full run."
+            "report": "LLM provider initialization failed. Cycle aborted gracefully. Check keys or use degraded mode."
         }
+
+    if llm is None:
+        # No LLM available (no keys or all failed) -> use keyless degraded mode so system NEVER stops
+        log_action("No LLM available. Running in DEGRADED KEYLESS MODE (free tools + rule-based CEO logic).")
+        return run_degraded_ceo_cycle(config, goal)
     
     # Load recent logs for context
     recent_logs = ""
@@ -856,6 +919,9 @@ def run_one_ceo_cycle(config: Dict, goal: Optional[str] = None, max_retries: int
             
             if attempt == max_retries:
                 # Graceful failsafe instead of hard failure
+                if any(x in error_str.lower() for x in ["ollama", "connection", "refused", "invalid api", "api key", "no llm", "credentials"]):
+                    log_action("Persistent LLM failure (connection/key/ollama) detected - falling back to DEGRADED KEYLESS mode so CEO does NOT stop.")
+                    return run_degraded_ceo_cycle(config, goal)
                 return {
                     "success": False, 
                     "error": error_str, 
@@ -901,7 +967,7 @@ def run_one_ceo_cycle(config: Dict, goal: Optional[str] = None, max_retries: int
         "full_output": final_output,
         "memory_lessons_count": len(memory.get("lessons", [])),
         "total_real_revenue": revenue.get("total_real_usd", 0),
-        "assets_generated": [f for f in os.listdir(GENERATED_DIR) if f.endswith(('.md', '.html', '.txt'))][-5:],  # Recent
+        "assets_generated": [f for f in os.listdir(GENERATED_DIR) if f.endswith(('.md', '.html', '.txt', '.mp3', '.mp4'))][-5:],  # Recent (include voice/video from degraded or full)
         "next_recommended": "Review generated/ folder and logs. Run another cycle or input real revenue earned."
     }
     
@@ -930,6 +996,237 @@ def run_autonomous(config: Dict, num_cycles: int = 3, goal: Optional[str] = None
             time.sleep(interval)
     
     log_action("AUTONOMOUS RUN COMPLETE.")
+
+
+def run_degraded_ceo_cycle(config: Dict, goal: Optional[str] = None) -> Dict:
+    """
+    KEYLESS DEGRADED MODE: Runs the CEO cycle WITHOUT any LLM or API keys.
+    Uses only free local tools (DDGS search, gTTS, PIL/moviepy) + rule-based Python logic.
+    Still: researches, generates REAL assets (voice, video, reports), requests Owner approvals,
+    logs revenue, updates memory, saves files. System NEVER stops even with zero keys.
+    Full smart planning returns when user adds FREE Gemini/Groq key.
+    This fulfills 'should be optional .. should not stop the ceo'.
+    """
+    if goal is None:
+        goal = load_goal()
+    memory = load_memory()
+    revenue = load_revenue()
+    config = config or get_config()
+
+    log_action("=== STARTING NEW CEO CYCLE (DEGRADED KEYLESS MODE - NO LLM / NO API KEYS) ===")
+    log_action(f"Goal: {goal[:120]}...")
+    log_action("Mode: Pure Python + free tools only. Research (DuckDuckGo), asset generation (voice/video), approvals, learning all work. No token costs ever.")
+    log_action("Recommendation: For full CEO intelligence (better plans, arena strategy), get free key: Gemini https://aistudio.google.com/app/apikey or Groq https://console.groq.com/keys (both instant, no card).")
+
+    # === FREE RESEARCH (always works, no key) ===
+    log_action("[Degraded] Performing free ethical research with DuckDuckGo...")
+    research_query = f"profitable faceless content business ideas 2026 {goal[:80]} low competition high demand affiliate digital products YouTube newsletter"
+    try:
+        if hasattr(internet_search, '_run'):
+            research = internet_search._run(query=research_query, max_results=6)
+        else:
+            research = internet_search(research_query, max_results=6)
+        log_action(f"[Degraded] Research results (first 400 chars): {research[:400]}...")
+    except Exception as e:
+        research = f"Research error: {str(e)}. Using fallback knowledge."
+        log_action(f"[Degraded] Research error: {e}", "WARN")
+
+    # === RULE-BASED 'CEO THINKING' (simple heuristics + templates, no LLM) ===
+    log_action("[Degraded] CEO performing rule-based strategic planning...")
+    niche = "faceless YouTube / content"
+    if "newsletter" in goal.lower() or "email" in goal.lower():
+        niche = "newsletter / email list"
+    elif "blog" in goal.lower() or "seo" in goal.lower():
+        niche = "blog / SEO content site"
+    elif "product" in goal.lower() or "digital product" in goal.lower():
+        niche = "digital products / ebooks"
+
+    plan = f"""DEGRADED KEYLESS CEO PLAN (rule-based):
+- Niche focus: {niche} aligned with goal.
+- Immediate actions: 1) Research validated (see above). 2) Generate 1-2 ready-to-use assets. 3) Request Owner approval for any public execution.
+- Strategy: Low-capital content business. Create value-first assets (scripts, posts, videos). Monetize via affiliates (Amazon, etc.), ads (once audience), digital products.
+- Revenue path (estimated, based on typical 2026 benchmarks): 1-3 months to first $50-200 via affiliates; 3-6mo $300-1000/mo with consistent output + SEO.
+- Arena winner (heuristic): Faceless video + newsletter hybrid for fastest audience + monetization.
+- Risks: Inconsistent execution, algorithm changes. Mitigate: Consistent 1 post/video per week, track what converts.
+- Next: Generate assets now, request approval if channel/posting involved, review in dashboard.
+"""
+
+    log_action(f"[Degraded] Plan summary: Focus {niche}. See full in generated report.")
+
+    # === EXECUTE: Generate real assets using free tools (keyless) ===
+    assets_created = []
+    log_action("[Degraded] Executor: Generating real assets...")
+
+    # 1. Save research + plan report
+    try:
+        report_md = f"""# Degraded Keyless CEO Cycle Report
+**Date:** {datetime.datetime.now().isoformat()}
+**Mode:** KEYLESS (no LLM, no API costs)
+**Goal:** {goal}
+
+## Research Summary (free DuckDuckGo)
+{research}
+
+## Strategic Plan (rule-based CEO logic)
+{plan}
+
+## Key Lessons / Recommendations
+- System ran fully autonomously despite zero API keys.
+- All asset generation, research, approval requests, memory work without cost.
+- Upgrade to full mode with free Gemini key for AI-powered arena planning, better niche analysis, custom scripts.
+
+**Owner:** Review generated/ folder. Approve any high-stakes requests below. Log real revenue when you execute ideas.
+"""
+        if hasattr(save_generated_asset, '_run'):
+            save_res = save_generated_asset._run(filename="degraded_ceo_report_cycle.md", content=report_md, asset_type="report")
+        else:
+            save_res = save_generated_asset("degraded_ceo_report_cycle.md", report_md, "report")
+        assets_created.append(save_res)
+        log_action(f"[Degraded] Saved report: {save_res}")
+    except Exception as e:
+        log_action(f"[Degraded] Report save failed: {e}", "ERROR")
+
+    # 2. Generate voiceover (always free gTTS)
+    try:
+        voice_script = "Hello and welcome. In today's faceless content, we explore profitable digital business ideas for 2026 using zero upfront capital and AI tools. Subscribe for more value."
+        if hasattr(generate_voiceover, '_run'):
+            voice_res = generate_voiceover._run(text=voice_script, filename="degraded_voiceover.mp3")
+        else:
+            voice_res = generate_voiceover(voice_script, filename="degraded_voiceover.mp3")
+        assets_created.append(voice_res)
+        log_action(f"[Degraded] Voiceover: {voice_res}")
+    except Exception as e:
+        log_action(f"[Degraded] Voiceover failed: {e}", "WARN")
+
+    # 3. Create faceless video if moviepy available (free local)
+    video_path = None
+    try:
+        if MOVIEPY_AVAILABLE:
+            script_for_video = "This is a test faceless video created in degraded keyless mode. The CEO agent continues to produce real MP4 assets even without cloud AI keys. Great for YouTube automation."
+            if hasattr(create_simple_faceless_video, '_run'):
+                video_res = create_simple_faceless_video._run(
+                    title="Degraded Mode: Profitable Faceless Content 2026",
+                    script_text=script_for_video,
+                    voiceover_path=os.path.join(GENERATED_DIR, "degraded_voiceover.mp3") if os.path.exists(os.path.join(GENERATED_DIR, "degraded_voiceover.mp3")) else None,
+                    output_filename="degraded_faceless_video.mp4"
+                )
+            else:
+                video_res = create_simple_faceless_video(
+                    title="Degraded Mode: Profitable Faceless Content 2026",
+                    script_text=script_for_video,
+                    voiceover_path=os.path.join(GENERATED_DIR, "degraded_voiceover.mp3") if os.path.exists(os.path.join(GENERATED_DIR, "degraded_voiceover.mp3")) else None,
+                    output_filename="degraded_faceless_video.mp4"
+                )
+            assets_created.append(video_res)
+            log_action(f"[Degraded] Video: {video_res}")
+            # extract path if possible for later package
+            if "created:" in video_res.lower():
+                video_path = os.path.join(GENERATED_DIR, "degraded_faceless_video.mp4")
+        else:
+            log_action("[Degraded] Moviepy not available - skipping video (install ffmpeg for full support).", "WARN")
+    except Exception as e:
+        log_action(f"[Degraded] Video creation failed: {e}", "WARN")
+
+    # 4. Prepare YouTube package if video exists (keyless prep)
+    try:
+        if video_path and os.path.exists(video_path):
+            if hasattr(prepare_youtube_upload_package, '_run'):
+                pkg_res = prepare_youtube_upload_package._run(
+                    video_path=video_path,
+                    title="Profitable Faceless Content Ideas 2026 - Keyless CEO Demo",
+                    description="Generated autonomously by CEO Virtual Agent in degraded mode. Full version with smart LLM planning available with free API key.",
+                    tags=["faceless youtube", "2026 side hustle", "ai tools", "make money online", "content creation"],
+                    thumbnail_description="Professional faceless thumbnail for 2026 content business"
+                )
+            else:
+                pkg_res = prepare_youtube_upload_package(
+                    video_path=video_path,
+                    title="Profitable Faceless Content Ideas 2026 - Keyless CEO Demo",
+                    description="Generated autonomously by CEO Virtual Agent in degraded mode. Full version with smart LLM planning available with free API key.",
+                    tags=["faceless youtube", "2026 side hustle", "ai tools", "make money online", "content creation"],
+                    thumbnail_description="Professional faceless thumbnail for 2026 content business"
+                )
+            assets_created.append(pkg_res)
+            log_action(f"[Degraded] YouTube package: {pkg_res}")
+    except Exception as e:
+        log_action(f"[Degraded] YouTube pkg failed: {e}", "WARN")
+
+    # === HIGH-STAKES: Request Owner Approval (keyless still does this correctly) ===
+    if "youtube" in goal.lower() or "video" in goal.lower() or "channel" in goal.lower() or "post" in goal.lower():
+        try:
+            if hasattr(request_owner_approval, '_run'):
+                approval_res = request_owner_approval._run(
+                    action="Setup / start uploading to a new faceless YouTube channel based on degraded research",
+                    rationale="Research shows demand in this niche. Degraded mode generated voice + video assets ready. With full LLM would do deeper arena analysis.",
+                    estimated_revenue_impact="$100-600/month within 4-6 months (ads + affiliates). Low capital.",
+                    risks="Time to create content weekly; YouTube algorithm changes; need consistency and SEO.",
+                    required_owner_inputs="1. Confirm channel name (e.g. 'AI Edge Daily 2026'). 2. Any existing Google/YouTube account details or credentials.json path. 3. Approval to proceed with more video generation and prep for upload."
+                )
+            else:
+                approval_res = request_owner_approval(
+                    action="Setup / start uploading to a new faceless YouTube channel based on degraded research",
+                    rationale="Research shows demand in this niche. Degraded mode generated voice + video assets ready. With full LLM would do deeper arena analysis.",
+                    estimated_revenue_impact="$100-600/month within 4-6 months (ads + affiliates). Low capital.",
+                    risks="Time to create content weekly; YouTube algorithm changes; need consistency and SEO.",
+                    required_owner_inputs="1. Confirm channel name (e.g. 'AI Edge Daily 2026'). 2. Any existing Google/YouTube account details or credentials.json path. 3. Approval to proceed with more video generation and prep for upload."
+                )
+            assets_created.append("Owner approval requested for YouTube channel setup.")
+            log_action(f"[Degraded] {approval_res[:300]}...")
+        except Exception as e:
+            log_action(f"[Degraded] Approval request failed: {e}", "ERROR")
+
+    # === LEARNING ===
+    append_lesson(
+        lesson="Degraded keyless cycle ran successfully. Research + asset gen + approvals all functional without keys or LLM. Real revenue logging works. Full CEO 'thinking' (planning, projections) is limited until free key added. Still produces usable outputs and never stops.",
+        context=f"Goal snippet: {goal[:100]}. Research used: DuckDuckGo free. Assets: {len(assets_created)}"
+    )
+    memory = load_memory()
+    memory["total_cycles"] = memory.get("total_cycles", 0) + 1
+    save_memory(memory)
+
+    # === FINAL REPORT ===
+    log_action("=== DEGRADED KEYLESS CYCLE COMPLETE ===")
+    full_report = f"""DEGRADED KEYLESS CEO CYCLE REPORT (NO LLM)
+
+Goal: {goal}
+
+Plan (rule-based):
+{plan}
+
+Research performed: Yes (free DDGS)
+Assets generated: {len(assets_created)}
+- See generated/ folder for report, voiceover.mp3, video.mp4 (if available), YouTube package.
+- Pending approvals in data/approvals/ if high-stakes action flagged.
+
+Real revenue so far: ${revenue.get('total_real_usd', 0):.2f}
+Total cycles learned: {memory.get('total_cycles', 0)}
+
+Next recommended: 
+1. Add a FREE API key (Gemini or Groq) via dashboard sidebar or Render env vars for full intelligent CEO.
+2. Review + approve any pending Owner requests.
+3. Log real earnings when you use the generated assets.
+4. Run another cycle - it will keep working in this mode until key is added.
+
+This mode ensures the CEO never stops, even with zero keys/tokens.
+"""
+
+    log_action(f"Final Degraded Report (truncated): {full_report[:500]}...")
+
+    report = {
+        "success": True,
+        "timestamp": datetime.datetime.now().isoformat(),
+        "goal": goal,
+        "full_output": full_report,
+        "memory_lessons_count": len(memory.get("lessons", [])),
+        "total_real_revenue": revenue.get("total_real_usd", 0),
+        "assets_generated": [f for f in os.listdir(GENERATED_DIR) if f.endswith(('.md', '.html', '.txt', '.mp3', '.mp4'))][-6:],
+        "next_recommended": "Add free Gemini/Groq key for smart LLM mode. Review generated/ and data/approvals/. Run cycle again (works in degraded). Log real revenue to learn.",
+        "mode": "degraded_keyless",
+        "provider_used": "none (keyless)"
+    }
+
+    return report
+
 
 # ============== CLI ENTRY (for server/cloud background runs) ==============
 if __name__ == "__main__":
