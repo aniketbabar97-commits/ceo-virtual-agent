@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: ceo-virtual-agent
+    env: python
+    region: oregon  # or frankfurt if you prefer Europe
+    plan: free  # upgrade to starter for no sleep + persistent disk
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    pythonVersion: 3.11.9  # Important: crewai and many packages don't support 3.14 yet
+    envVars:
+      # Add your secrets here in the Render dashboard (do NOT commit keys)
+      # GROQ_API_KEY: your-key-here
+      # LLM_PROVIDER: groq
+    # For persistent storage of generated content and memory (recommended for production)
+    # disk:
+    #   name: ceo-data
+    #   mountPath: /opt/render/project/src/data
+    #   sizeGB: 1
+    # Note: Free plan has no persistent disk and sleeps after inactivity.
+    # For 24/7 autonomous agent, use a Background Worker + paid plan or run the agent script separately.
