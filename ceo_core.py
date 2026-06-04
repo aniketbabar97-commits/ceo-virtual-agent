@@ -37,6 +37,18 @@ from crewai import Agent, Task, Crew, Process, LLM
 # crewai-tools package provides prebuilt tools but the base decorator moved.
 from crewai.tools import tool
 
+# Global litellm config for robustness across providers (especially Groq)
+# This prevents sending unsupported params like 'cache_breakpoint' that cause BadRequestError on Groq
+try:
+    import litellm
+    litellm.drop_params = True
+    litellm.set_verbose = False
+    # Disable any caching that some providers don't support
+    if hasattr(litellm, 'cache'):
+        litellm.cache = None
+except Exception:
+    pass  # litellm not installed or not needed
+
 # ============== CONFIG & PATHS ==============
 DATA_DIR = "data"
 GENERATED_DIR = "generated"
@@ -478,20 +490,36 @@ def get_llm(config: Dict) -> LLM:
         if not api_key:
             raise ValueError("Groq API key required. Get free at groq.com")
         
-        # Fix for Groq + litellm: drop unsupported params like 'cache_breakpoint' in system messages
-        # Groq API rejects cache features that some other providers support.
+        # Global drop_params at top of file + explicit here for max compatibility
         try:
             import litellm
             litellm.drop_params = True
-        except ImportError:
+        except:
             pass
         
-        return LLM(
-            model=f"groq/{model}",
-            api_key=api_key,
-            temperature=0.4,  # Balanced for CEO reasoning
-            max_tokens=4000
-        )
+        # Primary attempt
+        try:
+            return LLM(
+                model=f"groq/{model}",
+                api_key=api_key,
+                temperature=0.4,
+                max_tokens=4000,
+                # Extra hint for litellm to drop bad params
+                drop_params=True
+            )
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "cache_breakpoint" in error_msg or "unsupported" in error_msg:
+                log_action("Groq cache_breakpoint issue detected despite drop_params - using ultra-minimal LLM config as failsafe", "WARN")
+                # Ultra minimal retry - this often bypasses the cache feature entirely
+                return LLM(
+                    model=f"groq/{model}",
+                    api_key=api_key,
+                    temperature=0.4,
+                    max_tokens=3000  # Slightly lower to reduce context issues
+                )
+            # For rate limits or other, just re-raise so the cycle's failsafe catches it gracefully
+            raise
     elif provider == "ollama":
         # User must have ollama running locally or on server
         ollama_model = model if model else "llama3.2:3b"
@@ -503,6 +531,9 @@ def get_llm(config: Dict) -> LLM:
         )
     else:
         raise ValueError(f"Unknown provider: {provider}. Use 'groq' or 'ollama'.")
+
+    # Failsafe: If we reach here with Groq having issues, we could add more fallbacks here in future
+    # For now, the per-provider try blocks above handle Groq-specific cache issues.
 
 def get_config() -> Dict:
     default = {
@@ -711,7 +742,12 @@ def run_one_ceo_cycle(config: Dict, goal: Optional[str] = None, max_retries: int
         llm = get_llm(config)
     except Exception as e:
         log_action(f"LLM init failed: {e}", "ERROR")
-        return {"success": False, "error": str(e), "report": "Failed to initialize AI brain. Check API key or Ollama running."}
+        # Failsafe: return graceful response instead of crashing the cycle
+        return {
+            "success": False, 
+            "error": str(e), 
+            "report": "LLM provider (Groq) initialization failed. This can happen due to rate limits, invalid key, or temporary provider issues. Cycle aborted gracefully. Check your GROQ_API_KEY in Render env vars and try again later. No tokens wasted on failed full run."
+        }
     
     # Load recent logs for context
     recent_logs = ""
@@ -730,9 +766,26 @@ def run_one_ceo_cycle(config: Dict, goal: Optional[str] = None, max_retries: int
             result = crew.kickoff()
             break
         except Exception as e:
-            log_action(f"Crew error attempt {attempt+1}: {str(e)}", "ERROR")
+            error_str = str(e)
+            log_action(f"Crew error attempt {attempt+1}: {error_str}", "ERROR")
+            
+            # Failsafe for Groq-specific issues (cache_breakpoint, rate limits, etc.)
+            if "cache_breakpoint" in error_str.lower() or "unsupported" in error_str.lower():
+                log_action("Detected Groq cache_breakpoint issue - this should be mitigated by litellm.drop_params. If persistent, consider switching model or provider.", "WARN")
+            
+            if "rate limit" in error_str.lower() or "rate_limit" in error_str.lower():
+                log_action("Rate limit hit on Groq - waiting longer before retry to conserve tokens.", "WARN")
+                time.sleep(15)  # Longer backoff to avoid wasting tokens
+            else:
+                time.sleep(5)
+            
             if attempt == max_retries:
-                return {"success": False, "error": str(e), "report": "Crew failed after retries. Check logs and try again or switch model."}
+                # Graceful failsafe instead of hard failure
+                return {
+                    "success": False, 
+                    "error": error_str, 
+                    "report": f"Crew failed after {max_retries+1} attempts due to LLM/provider error. This often happens with Groq rate limits or temporary issues. The system is designed to fail gracefully without crashing the dashboard. Check logs for details. Recommendation: Wait a few minutes or use a different model/provider in config."
+                }
             time.sleep(5)
     
     # Process result
