@@ -20,7 +20,7 @@ except ImportError:
 
 # New for real autonomous execution (voice, simple videos, YouTube prep)
 from gtts import gTTS
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import textwrap
 
 # moviepy is optional for full video (requires ffmpeg system package too). We load inside the function for compatibility.
@@ -301,55 +301,74 @@ def generate_voiceover(text: str, filename: str = None, lang: str = "en") -> str
 @tool
 def create_simple_faceless_video(title: str, script_text: str, voiceover_path: str = None, output_filename: str = None, style: str = "slideshow") -> str:
     """
-    Create a real, upload-ready faceless video (MP4) for YouTube-style content using free tools.
+    Create a real, upload-ready faceless video (MP4) or reliable GIF fallback for YouTube-style content.
+    Works even without ffmpeg (GIF always produced via Pillow).
     """
     try:
         if not output_filename:
-            output_filename = f"video_{title[:30].replace(' ', '_')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-        if not output_filename.endswith('.mp4'):
-            output_filename += '.mp4'
-        
-        filepath = os.path.join(GENERATED_DIR, output_filename)
-        
-        width, height = 1920, 1080
-        bg_color = (20, 30, 50)
-        img = Image.new('RGB', (width, height), bg_color)
-        bg_path = os.path.join(GENERATED_DIR, "temp_bg.png")
-        img.save(bg_path)
-        
-        lines = [line.strip() for line in script_text.split('\n') if line.strip()][:6]
-        clips = []
-        
-        bg_clip = ImageClip(bg_path).set_duration(10)
-        
-        title_clip = TextClip(title, fontsize=60, color='white', font='Arial-Bold', size=(width-100, None), method='caption').set_position('center')
-        title_clip = title_clip.set_duration(4)
-        clips.append(title_clip)
-        
-        for line in lines:
-            wrapped = '\n'.join(textwrap.wrap(line, width=50))
-            txt_clip = TextClip(wrapped, fontsize=36, color='white', font='Arial', size=(width-150, None), method='caption').set_position('center')
-            txt_clip = txt_clip.set_duration(6)
-            clips.append(txt_clip)
-        
-        if voiceover_path and os.path.exists(voiceover_path):
-            audio = AudioFileClip(voiceover_path)
-            video_duration = audio.duration
-            bg_clip = ImageClip(bg_path).set_duration(video_duration)
-            final = CompositeVideoClip([bg_clip] + clips, size=(width, height))
-            final = final.set_audio(audio)
+            output_filename = f"video_{title[:30].replace(' ', '_')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        base_name = output_filename.replace('.mp4', '').replace('.gif', '')
+
+        width, height = 1280, 720  # smaller for faster GIFs
+        lines = [line.strip() for line in script_text.split('\n') if line.strip()][:5]
+
+        if MOVIEPY_AVAILABLE:
+            # Full MP4 path (best when ffmpeg is installed)
+            filepath = os.path.join(GENERATED_DIR, base_name + ".mp4")
+            bg_color = (20, 30, 50)
+            img = Image.new('RGB', (1920, 1080), bg_color)
+            bg_path = os.path.join(GENERATED_DIR, "temp_bg.png")
+            img.save(bg_path)
+
+            clips = []
+            bg_clip = ImageClip(bg_path).set_duration(8)
+            title_clip = TextClip(title, fontsize=55, color='white', font='Arial-Bold', size=(1800, None), method='caption').set_position('center').set_duration(3)
+            clips.append(title_clip)
+            for line in lines:
+                wrapped = '\n'.join(textwrap.wrap(line, width=45))
+                txt_clip = TextClip(wrapped, fontsize=32, color='white', font='Arial', size=(1700, None), method='caption').set_position('center').set_duration(5)
+                clips.append(txt_clip)
+
+            if voiceover_path and os.path.exists(voiceover_path):
+                audio = AudioFileClip(voiceover_path)
+                video_duration = audio.duration
+                bg_clip = ImageClip(bg_path).set_duration(video_duration)
+                final = CompositeVideoClip([bg_clip] + clips, size=(1920, 1080))
+                final = final.set_audio(audio)
+            else:
+                final = CompositeVideoClip([bg_clip] + clips, size=(1920, 1080))
+                video_duration = sum(c.duration for c in clips)
+
+            final.write_videofile(filepath, fps=24, codec='libx264', audio_codec='aac', verbose=False, logger=None)
+            if os.path.exists(bg_path):
+                os.remove(bg_path)
+            return f"✅ Faceless MP4 video created: {filepath} (Duration: {video_duration:.1f}s). Ready for YouTube."
         else:
-            final = CompositeVideoClip([bg_clip] + clips, size=(width, height))
-            video_duration = sum(c.duration for c in clips)
-        
-        final.write_videofile(filepath, fps=24, codec='libx264', audio_codec='aac', verbose=False, logger=None)
-        
-        if os.path.exists(bg_path):
-            os.remove(bg_path)
-        
-        return f"✅ Faceless video created: {filepath} (Duration: {video_duration:.1f}s). Ready for YouTube after Owner approval."
+            # Reliable Pillow GIF fallback (always works, no ffmpeg/moviepy needed)
+            filepath = os.path.join(GENERATED_DIR, base_name + ".gif")
+            frames = []
+            for i in range(min(10, max(6, len(lines) + 2))):
+                img = Image.new('RGB', (width, height), (25 + (i % 3)*8, 35, 55))
+                draw = ImageDraw.Draw(img)
+                try:
+                    font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
+                    font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+                except:
+                    font_large = ImageFont.load_default()
+                    font_small = ImageFont.load_default()
+
+                draw.text((width//2, 180), title[:55], fill="white", font=font_large, anchor="mm")
+                if lines:
+                    idx = i % len(lines)
+                    wrapped = '\n'.join(textwrap.wrap(lines[idx], width=40))
+                    draw.text((width//2, 320), wrapped, fill="white", font=font_small, anchor="mm")
+                draw.text((width//2, 620), f"Faceless {style} • Cycle {datetime.datetime.now().strftime('%H:%M')}", fill="#a0c4ff", font=font_small, anchor="mm")
+                frames.append(img)
+
+            frames[0].save(filepath, save_all=True, append_images=frames[1:], duration=450, loop=0)
+            return f"✅ Faceless GIF video created (no ffmpeg needed): {filepath}. Can be used directly or converted to MP4. Duration ~{len(frames)*0.45:.1f}s. Ready for YouTube after Owner approval."
     except Exception as e:
-        return f"Video creation failed: {str(e)}. (Install ffmpeg on system for full video support)."
+        return f"Video/GIF creation failed: {str(e)}."
 
 @tool
 def prepare_youtube_upload_package(video_path: str, title: str, description: str, tags: list, thumbnail_description: str = "") -> str:
@@ -459,6 +478,22 @@ def append_lesson(lesson: str, context: str = ""):
 def load_revenue() -> Dict:
     default = {"events": [], "total_real_usd": 0.0, "projected_usd": 0.0}
     return load_json(REVENUE_FILE, default)
+
+def load_recent_approvals(status_filter=None, limit=5):
+    """Load recent approval requests, optionally filtered by status (PENDING, APPROVED, etc.)."""
+    approval_dir = os.path.join(DATA_DIR, "approvals")
+    os.makedirs(approval_dir, exist_ok=True)
+    approvals = []
+    for f in sorted(os.listdir(approval_dir), reverse=True)[:20]:
+        if f.endswith(".json"):
+            try:
+                with open(os.path.join(approval_dir, f), "r") as fh:
+                    req = json.load(fh)
+                if status_filter is None or req.get("status") == status_filter:
+                    approvals.append(req)
+            except:
+                pass
+    return approvals[:limit]
 
 def save_revenue(data: Dict):
     save_json(REVENUE_FILE, data)
@@ -1001,11 +1036,12 @@ def run_autonomous(config: Dict, num_cycles: int = 3, goal: Optional[str] = None
 def run_degraded_ceo_cycle(config: Dict, goal: Optional[str] = None) -> Dict:
     """
     KEYLESS DEGRADED MODE: Runs the CEO cycle WITHOUT any LLM or API keys.
-    Uses only free local tools (DDGS search, gTTS, PIL/moviepy) + rule-based Python logic.
-    Still: researches, generates REAL assets (voice, video, reports), requests Owner approvals,
-    logs revenue, updates memory, saves files. System NEVER stops even with zero keys.
-    Full smart planning returns when user adds FREE Gemini/Groq key.
-    This fulfills 'should be optional .. should not stop the ceo'.
+    Uses only free local tools (DDGS search, gTTS, PIL) + smarter rule-based logic.
+    Now much less repetitive: uses actual research to pick concrete ideas, checks
+    for APPROVED Owner requests and EXECUTES them (generates videos/scripts for the
+    approved channel instead of asking again every time), varies actions by cycle.
+    Always tries to produce a video asset (GIF fallback if no ffmpeg/moviepy).
+    System NEVER stops even with zero keys.
     """
     if goal is None:
         goal = load_goal()
@@ -1013,214 +1049,230 @@ def run_degraded_ceo_cycle(config: Dict, goal: Optional[str] = None) -> Dict:
     revenue = load_revenue()
     config = config or get_config()
 
+    cycle_num = memory.get("total_cycles", 0) + 1
+
     log_action("=== STARTING NEW CEO CYCLE (DEGRADED KEYLESS MODE - NO LLM / NO API KEYS) ===")
     log_action(f"Goal: {goal[:120]}...")
-    log_action("Mode: Pure Python + free tools only. Research (DuckDuckGo), asset generation (voice/video), approvals, learning all work. No token costs ever.")
-    log_action("Recommendation: For full CEO intelligence (better plans, arena strategy), get free key: Gemini https://aistudio.google.com/app/apikey or Groq https://console.groq.com/keys (both instant, no card).")
+    log_action(f"Cycle #{cycle_num} | Mode: Pure Python + free tools only (research, voice, video/GIF, approvals, learning). No token costs ever.")
+    log_action("Recommendation: For full CEO intelligence, get free key: Gemini https://aistudio.google.com/app/apikey or Groq https://console.groq.com/keys")
 
-    # === FREE RESEARCH (always works, no key) ===
+    # === FREE RESEARCH ===
     log_action("[Degraded] Performing free ethical research with DuckDuckGo...")
-    research_query = f"profitable faceless content business ideas 2026 {goal[:80]} low competition high demand affiliate digital products YouTube newsletter"
+    research_query = f"profitable faceless YouTube niches 2026 low competition high RPM affiliate digital products {goal[:60]}"
     try:
         if hasattr(internet_search, '_run'):
-            research = internet_search._run(query=research_query, max_results=6)
+            research = internet_search._run(query=research_query, max_results=8)
         else:
-            research = internet_search(research_query, max_results=6)
-        log_action(f"[Degraded] Research results (first 400 chars): {research[:400]}...")
+            research = internet_search(research_query, max_results=8)
+        log_action(f"[Degraded] Research snippet: {research[:350]}...")
     except Exception as e:
-        research = f"Research error: {str(e)}. Using fallback knowledge."
-        log_action(f"[Degraded] Research error: {e}", "WARN")
+        research = "Research used previous knowledge (DuckDuckGo call failed this time)."
+        log_action(f"[Degraded] Research note: {e}", "WARN")
 
-    # === RULE-BASED 'CEO THINKING' (simple heuristics + templates, no LLM) ===
-    log_action("[Degraded] CEO performing rule-based strategic planning...")
-    niche = "faceless YouTube / content"
-    if "newsletter" in goal.lower() or "email" in goal.lower():
-        niche = "newsletter / email list"
-    elif "blog" in goal.lower() or "seo" in goal.lower():
-        niche = "blog / SEO content site"
-    elif "product" in goal.lower() or "digital product" in goal.lower():
-        niche = "digital products / ebooks"
+    # === Load previous approvals to EXECUTE instead of always requesting ===
+    approved_youtube = None
+    for appr in load_recent_approvals(status_filter="APPROVED", limit=5):
+        if "youtube" in appr.get("action", "").lower() or "channel" in appr.get("action", "").lower():
+            approved_youtube = appr
+            break
 
-    plan = f"""DEGRADED KEYLESS CEO PLAN (rule-based):
-- Niche focus: {niche} aligned with goal.
-- Immediate actions: 1) Research validated (see above). 2) Generate 1-2 ready-to-use assets. 3) Request Owner approval for any public execution.
-- Strategy: Low-capital content business. Create value-first assets (scripts, posts, videos). Monetize via affiliates (Amazon, etc.), ads (once audience), digital products.
-- Revenue path (estimated, based on typical 2026 benchmarks): 1-3 months to first $50-200 via affiliates; 3-6mo $300-1000/mo with consistent output + SEO.
-- Arena winner (heuristic): Faceless video + newsletter hybrid for fastest audience + monetization.
-- Risks: Inconsistent execution, algorithm changes. Mitigate: Consistent 1 post/video per week, track what converts.
-- Next: Generate assets now, request approval if channel/posting involved, review in dashboard.
+    pending_approvals = load_recent_approvals(status_filter="PENDING", limit=3)
+
+    # === Smarter rule-based planning (uses research + cycle + approvals to vary) ===
+    log_action("[Degraded] CEO performing dynamic rule-based planning (varies by research + cycle)...")
+
+    # Extract concrete ideas from research (simple parsing)
+    ideas = []
+    for line in research.split("\n"):
+        if "Title:" in line or "profitable" in line.lower() or "niche" in line.lower() or "RPM" in line:
+            clean = line.replace("Title:", "").strip()[:80]
+            if len(clean) > 10 and clean not in ideas:
+                ideas.append(clean)
+    if not ideas:
+        ideas = ["Faceless productivity tips", "AI tools for beginners 2026", "Low-capital side hustles"]
+
+    focus_idea = ideas[0] if ideas else "faceless YouTube in high-demand niche"
+    if cycle_num % 3 == 0 and len(ideas) > 1:
+        focus_idea = ideas[1]  # vary every 3rd cycle
+
+    # Decide action based on state (prevents repetition)
+    if approved_youtube:
+        action = "EXECUTE approved YouTube channel"
+        channel_name = approved_youtube.get("owner_response", "AI Productivity Daily 2026").split(".")[0][:40]
+        plan = f"""DEGRADED KEYLESS PLAN (EXECUTING APPROVED):
+- Using approved channel: {channel_name}
+- Research-backed idea: {focus_idea}
+- Generate 2-3 ready video scripts + voiceovers + simple video/GIF assets.
+- Prepare upload packages.
+- Log progress toward revenue.
+"""
+    elif any("youtube" in (a.get("action","") + str(a.get("owner_response",""))).lower() for a in pending_approvals):
+        action = "WAIT for Owner approval on channel (already requested)"
+        plan = f"""DEGRADED KEYLESS PLAN:
+- Research completed for {focus_idea}.
+- Approval already pending — will execute videos/scripts as soon as you approve.
+- In meantime: Generate extra supporting assets (report + voice).
+"""
+    else:
+        action = "RESEARCH + REQUEST high-stakes + generate starter assets"
+        plan = f"""DEGRADED KEYLESS CEO PLAN (cycle {cycle_num}):
+- Focus idea from research: {focus_idea}
+- Strategy: Build faceless YouTube audience fast with value-first videos (scripts + voice + visuals).
+- Revenue path: Affiliates in 1-3 months, ads + products by month 4-6.
+- Immediate: Generate report, voiceover, 1 video asset. Request Owner approval for channel setup if not done.
+- Vary next cycles: More videos, blog tie-in, or product ideas.
 """
 
-    log_action(f"[Degraded] Plan summary: Focus {niche}. See full in generated report.")
+    log_action(f"[Degraded] Action: {action} | Focus: {focus_idea}")
 
-    # === EXECUTE: Generate real assets using free tools (keyless) ===
+    # === Generate assets (now more varied) ===
     assets_created = []
-    log_action("[Degraded] Executor: Generating real assets...")
+    log_action("[Degraded] Executor: Generating varied real assets...")
 
-    # 1. Save research + plan report
+    # Always save a report (includes research + plan)
     try:
-        report_md = f"""# Degraded Keyless CEO Cycle Report
+        report_md = f"""# Degraded Keyless CEO Cycle Report #{cycle_num}
 **Date:** {datetime.datetime.now().isoformat()}
-**Mode:** KEYLESS (no LLM, no API costs)
+**Mode:** KEYLESS (no LLM)
 **Goal:** {goal}
 
-## Research Summary (free DuckDuckGo)
-{research}
+## Fresh Research (DuckDuckGo)
+{research[:1500]}
 
-## Strategic Plan (rule-based CEO logic)
+## Dynamic Plan
 {plan}
 
-## Key Lessons / Recommendations
-- System ran fully autonomously despite zero API keys.
-- All asset generation, research, approval requests, memory work without cost.
-- Upgrade to full mode with free Gemini key for AI-powered arena planning, better niche analysis, custom scripts.
-
-**Owner:** Review generated/ folder. Approve any high-stakes requests below. Log real revenue when you execute ideas.
+## Owner Notes
+- If you approved a channel, this cycle executed content for it.
+- Review generated/ for ready-to-use files.
+- Log real revenue when you publish/monetize.
 """
         if hasattr(save_generated_asset, '_run'):
-            save_res = save_generated_asset._run(filename="degraded_ceo_report_cycle.md", content=report_md, asset_type="report")
+            save_res = save_generated_asset._run(filename=f"degraded_report_cycle_{cycle_num}.md", content=report_md, asset_type="report")
         else:
-            save_res = save_generated_asset("degraded_ceo_report_cycle.md", report_md, "report")
+            save_res = save_generated_asset(f"degraded_report_cycle_{cycle_num}.md", report_md, "report")
         assets_created.append(save_res)
-        log_action(f"[Degraded] Saved report: {save_res}")
     except Exception as e:
-        log_action(f"[Degraded] Report save failed: {e}", "ERROR")
+        log_action(f"[Degraded] Report save error: {e}", "WARN")
 
-    # 2. Generate voiceover (always free gTTS)
+    # Voiceover (always)
+    voice_script = f"Welcome to our faceless series on {focus_idea}. In 2026 this niche is exploding with low competition and high RPM. Here's exactly how to start today with zero capital."
     try:
-        voice_script = "Hello and welcome. In today's faceless content, we explore profitable digital business ideas for 2026 using zero upfront capital and AI tools. Subscribe for more value."
         if hasattr(generate_voiceover, '_run'):
-            voice_res = generate_voiceover._run(text=voice_script, filename="degraded_voiceover.mp3")
+            voice_res = generate_voiceover._run(text=voice_script, filename=f"degraded_voice_{cycle_num}.mp3")
         else:
-            voice_res = generate_voiceover(voice_script, filename="degraded_voiceover.mp3")
+            voice_res = generate_voiceover(voice_script, filename=f"degraded_voice_{cycle_num}.mp3")
         assets_created.append(voice_res)
-        log_action(f"[Degraded] Voiceover: {voice_res}")
     except Exception as e:
-        log_action(f"[Degraded] Voiceover failed: {e}", "WARN")
+        log_action(f"[Degraded] Voice error: {e}", "WARN")
 
-    # 3. Create faceless video if moviepy available (free local)
+    # Video / GIF asset (improved fallback — always tries to produce something visual)
     video_path = None
     try:
+        video_title = f"{focus_idea} - Faceless 2026"
+        script_short = voice_script[:300]
         if MOVIEPY_AVAILABLE:
-            script_for_video = "This is a test faceless video created in degraded keyless mode. The CEO agent continues to produce real MP4 assets even without cloud AI keys. Great for YouTube automation."
+            # full moviepy path (will work after ffmpeg on Render)
             if hasattr(create_simple_faceless_video, '_run'):
-                video_res = create_simple_faceless_video._run(
-                    title="Degraded Mode: Profitable Faceless Content 2026",
-                    script_text=script_for_video,
-                    voiceover_path=os.path.join(GENERATED_DIR, "degraded_voiceover.mp3") if os.path.exists(os.path.join(GENERATED_DIR, "degraded_voiceover.mp3")) else None,
-                    output_filename="degraded_faceless_video.mp4"
-                )
+                video_res = create_simple_faceless_video._run(title=video_title, script_text=script_short, voiceover_path=None, output_filename=f"degraded_video_{cycle_num}.mp4")
             else:
-                video_res = create_simple_faceless_video(
-                    title="Degraded Mode: Profitable Faceless Content 2026",
-                    script_text=script_for_video,
-                    voiceover_path=os.path.join(GENERATED_DIR, "degraded_voiceover.mp3") if os.path.exists(os.path.join(GENERATED_DIR, "degraded_voiceover.mp3")) else None,
-                    output_filename="degraded_faceless_video.mp4"
-                )
+                video_res = create_simple_faceless_video(title=video_title, script_text=script_short, voiceover_path=None, output_filename=f"degraded_video_{cycle_num}.mp4")
             assets_created.append(video_res)
-            log_action(f"[Degraded] Video: {video_res}")
-            # extract path if possible for later package
-            if "created:" in video_res.lower():
-                video_path = os.path.join(GENERATED_DIR, "degraded_faceless_video.mp4")
+            if "created:" in str(video_res).lower():
+                video_path = os.path.join(GENERATED_DIR, f"degraded_video_{cycle_num}.mp4")
         else:
-            log_action("[Degraded] Moviepy not available - skipping video (install ffmpeg for full support).", "WARN")
+            # Pure Pillow animated GIF fallback (always works, no ffmpeg needed)
+            gif_path = os.path.join(GENERATED_DIR, f"degraded_video_{cycle_num}.gif")
+            frames = []
+            for i in range(8):
+                img = Image.new('RGB', (1280, 720), (30 + i*5, 40, 60))
+                from PIL import ImageDraw, ImageFont
+                draw = ImageDraw.Draw(img)
+                draw.text((640, 300), video_title[:45], fill="white", anchor="mm")
+                draw.text((640, 400), f"Part {i+1}/8 | {focus_idea}", fill="white", anchor="mm")
+                frames.append(img)
+            frames[0].save(gif_path, save_all=True, append_images=frames[1:], duration=400, loop=0)
+            video_path = gif_path
+            assets_created.append(f"✅ Faceless GIF created (no ffmpeg): {gif_path}. Use as video placeholder or convert to MP4 locally.")
+            log_action(f"[Degraded] Created GIF fallback video (always works): {gif_path}")
     except Exception as e:
-        log_action(f"[Degraded] Video creation failed: {e}", "WARN")
+        log_action(f"[Degraded] Video/GIF creation error: {e}", "WARN")
 
-    # 4. Prepare YouTube package if video exists (keyless prep)
-    try:
-        if video_path and os.path.exists(video_path):
+    # If we have an approved YouTube channel, EXECUTE: generate extra video + package
+    if approved_youtube and video_path:
+        try:
+            ch_name = approved_youtube.get("owner_response", "My Faceless Channel").split(".")[0][:35]
             if hasattr(prepare_youtube_upload_package, '_run'):
                 pkg_res = prepare_youtube_upload_package._run(
                     video_path=video_path,
-                    title="Profitable Faceless Content Ideas 2026 - Keyless CEO Demo",
-                    description="Generated autonomously by CEO Virtual Agent in degraded mode. Full version with smart LLM planning available with free API key.",
-                    tags=["faceless youtube", "2026 side hustle", "ai tools", "make money online", "content creation"],
-                    thumbnail_description="Professional faceless thumbnail for 2026 content business"
+                    title=f"{ch_name} - {focus_idea}",
+                    description=f"Generated autonomously in degraded mode for approved channel. Research-backed faceless content for 2026. {plan[:200]}",
+                    tags=["faceless youtube", focus_idea.lower()[:30], "2026", "make money online"],
+                    thumbnail_description=f"Thumbnail for {focus_idea}"
                 )
             else:
-                pkg_res = prepare_youtube_upload_package(
-                    video_path=video_path,
-                    title="Profitable Faceless Content Ideas 2026 - Keyless CEO Demo",
-                    description="Generated autonomously by CEO Virtual Agent in degraded mode. Full version with smart LLM planning available with free API key.",
-                    tags=["faceless youtube", "2026 side hustle", "ai tools", "make money online", "content creation"],
-                    thumbnail_description="Professional faceless thumbnail for 2026 content business"
-                )
+                pkg_res = prepare_youtube_upload_package(video_path, f"{ch_name} - {focus_idea}", "...", ["faceless", "2026"])
             assets_created.append(pkg_res)
-            log_action(f"[Degraded] YouTube package: {pkg_res}")
-    except Exception as e:
-        log_action(f"[Degraded] YouTube pkg failed: {e}", "WARN")
-
-    # === HIGH-STAKES: Request Owner Approval (keyless still does this correctly) ===
-    if "youtube" in goal.lower() or "video" in goal.lower() or "channel" in goal.lower() or "post" in goal.lower():
-        try:
-            if hasattr(request_owner_approval, '_run'):
-                approval_res = request_owner_approval._run(
-                    action="Setup / start uploading to a new faceless YouTube channel based on degraded research",
-                    rationale="Research shows demand in this niche. Degraded mode generated voice + video assets ready. With full LLM would do deeper arena analysis.",
-                    estimated_revenue_impact="$100-600/month within 4-6 months (ads + affiliates). Low capital.",
-                    risks="Time to create content weekly; YouTube algorithm changes; need consistency and SEO.",
-                    required_owner_inputs="1. Confirm channel name (e.g. 'AI Edge Daily 2026'). 2. Any existing Google/YouTube account details or credentials.json path. 3. Approval to proceed with more video generation and prep for upload."
-                )
-            else:
-                approval_res = request_owner_approval(
-                    action="Setup / start uploading to a new faceless YouTube channel based on degraded research",
-                    rationale="Research shows demand in this niche. Degraded mode generated voice + video assets ready. With full LLM would do deeper arena analysis.",
-                    estimated_revenue_impact="$100-600/month within 4-6 months (ads + affiliates). Low capital.",
-                    risks="Time to create content weekly; YouTube algorithm changes; need consistency and SEO.",
-                    required_owner_inputs="1. Confirm channel name (e.g. 'AI Edge Daily 2026'). 2. Any existing Google/YouTube account details or credentials.json path. 3. Approval to proceed with more video generation and prep for upload."
-                )
-            assets_created.append("Owner approval requested for YouTube channel setup.")
-            log_action(f"[Degraded] {approval_res[:300]}...")
+            log_action(f"[Degraded] EXECUTED for approved channel: {pkg_res}")
         except Exception as e:
-            log_action(f"[Degraded] Approval request failed: {e}", "ERROR")
+            log_action(f"[Degraded] Package for approved failed: {e}", "WARN")
 
-    # === LEARNING ===
-    append_lesson(
-        lesson="Degraded keyless cycle ran successfully. Research + asset gen + approvals all functional without keys or LLM. Real revenue logging works. Full CEO 'thinking' (planning, projections) is limited until free key added. Still produces usable outputs and never stops.",
-        context=f"Goal snippet: {goal[:100]}. Research used: DuckDuckGo free. Assets: {len(assets_created)}"
-    )
+    # Request approval ONLY if no recent YouTube approval/pending
+    if not approved_youtube and not any("youtube" in (a.get("action","") + str(a.get("owner_response",""))).lower() for a in pending_approvals):
+        if "youtube" in goal.lower() or "video" in goal.lower() or "channel" in goal.lower():
+            try:
+                if hasattr(request_owner_approval, '_run'):
+                    approval_res = request_owner_approval._run(
+                        action="Setup / start uploading to a new faceless YouTube channel",
+                        rationale=f"Research shows strong demand for {focus_idea}. Cycle {cycle_num} generated starter voice + visual asset. Ready to scale once approved.",
+                        estimated_revenue_impact="$100-700/month in 4-6 months (ads + affiliates).",
+                        risks="Consistency needed; algorithm changes.",
+                        required_owner_inputs=f"Channel name (e.g. '{focus_idea[:20]} Daily'), confirm to generate more videos for this channel."
+                    )
+                else:
+                    approval_res = request_owner_approval("Setup YouTube channel for " + focus_idea, "...", "$100-600/mo", "...", "Channel name + confirmation")
+                assets_created.append("New Owner approval requested for YouTube.")
+                log_action(f"[Degraded] {str(approval_res)[:250]}...")
+            except Exception as e:
+                log_action(f"[Degraded] Approval request error: {e}", "WARN")
+
+    # Learning + memory
+    lesson = f"Cycle {cycle_num} (degraded): Focused on {focus_idea}. {'Executed approved channel content' if approved_youtube else 'Generated starter assets + requested approval'}. Research from DDGS used to pick idea. Never stops without keys."
+    append_lesson(lesson, context=f"Research: {research[:200]} | Assets: {len(assets_created)}")
     memory = load_memory()
-    memory["total_cycles"] = memory.get("total_cycles", 0) + 1
+    memory["total_cycles"] = cycle_num
     save_memory(memory)
 
-    # === FINAL REPORT ===
     log_action("=== DEGRADED KEYLESS CYCLE COMPLETE ===")
-    full_report = f"""DEGRADED KEYLESS CEO CYCLE REPORT (NO LLM)
+
+    full_output = f"""DEGRADED KEYLESS CEO CYCLE #{cycle_num} REPORT (NO LLM)
 
 Goal: {goal}
 
-Plan (rule-based):
-{plan}
+Research used (real DuckDuckGo): {research[:600]}...
 
-Research performed: Yes (free DDGS)
-Assets generated: {len(assets_created)}
-- See generated/ folder for report, voiceover.mp3, video.mp4 (if available), YouTube package.
-- Pending approvals in data/approvals/ if high-stakes action flagged.
+Plan this cycle: {plan}
 
-Real revenue so far: ${revenue.get('total_real_usd', 0):.2f}
-Total cycles learned: {memory.get('total_cycles', 0)}
+Assets created this run: {len(assets_created)}
+- See generated/ for report, voice MP3, video/GIF, packages.
 
-Next recommended: 
-1. Add a FREE API key (Gemini or Groq) via dashboard sidebar or Render env vars for full intelligent CEO.
-2. Review + approve any pending Owner requests.
-3. Log real earnings when you use the generated assets.
-4. Run another cycle - it will keep working in this mode until key is added.
+Approved YouTube channel detected? {'Yes - executed content for it' if approved_youtube else 'No - new request may have been made if needed'}
 
-This mode ensures the CEO never stops, even with zero keys/tokens.
+Real revenue tracked: ${revenue.get('total_real_usd', 0):.2f}
+Total cycles: {cycle_num}
+
+Next: Review/approve the pending request in dashboard (if any). Run another cycle — it will now vary and execute on your approvals instead of repeating the same request.
 """
-
-    log_action(f"Final Degraded Report (truncated): {full_report[:500]}...")
 
     report = {
         "success": True,
         "timestamp": datetime.datetime.now().isoformat(),
         "goal": goal,
-        "full_output": full_report,
+        "full_output": full_output,
         "memory_lessons_count": len(memory.get("lessons", [])),
         "total_real_revenue": revenue.get("total_real_usd", 0),
-        "assets_generated": [f for f in os.listdir(GENERATED_DIR) if f.endswith(('.md', '.html', '.txt', '.mp3', '.mp4'))][-6:],
-        "next_recommended": "Add free Gemini/Groq key for smart LLM mode. Review generated/ and data/approvals/. Run cycle again (works in degraded). Log real revenue to learn.",
+        "assets_generated": [f for f in os.listdir(GENERATED_DIR) if f.endswith(('.md', '.html', '.txt', '.mp3', '.mp4', '.gif'))][-8:],
+        "next_recommended": "Approve the pending YouTube channel request (or any others). Run another cycle — it will generate actual videos for the approved channel instead of repeating. Add free Gemini/Groq key anytime for much smarter planning.",
         "mode": "degraded_keyless",
         "provider_used": "none (keyless)"
     }
