@@ -477,6 +477,15 @@ def get_llm(config: Dict) -> LLM:
     if provider == "groq":
         if not api_key:
             raise ValueError("Groq API key required. Get free at groq.com")
+        
+        # Fix for Groq + litellm: drop unsupported params like 'cache_breakpoint' in system messages
+        # Groq API rejects cache features that some other providers support.
+        try:
+            import litellm
+            litellm.drop_params = True
+        except ImportError:
+            pass
+        
         return LLM(
             model=f"groq/{model}",
             api_key=api_key,
@@ -521,7 +530,7 @@ def create_ceo_crew(llm: LLM, goal: str, memory: Dict, recent_logs: str = "") ->
         llm=llm,
         verbose=True,
         allow_delegation=True,  # CEO can delegate further if needed
-        tools=[WRAPPED_INTERNET_SEARCH, WRAPPED_SCRAPE, WRAPPED_SAVE, WRAPPED_LOG_REVENUE, WRAPPED_REQUEST_APPROVAL, WRAPPED_VOICE, WRAPPED_VIDEO, WRAPPED_YOUTUBE_PKG],
+        tools=[],  # CRITICAL: Manager agent in hierarchical Crew must NOT have tools (causes "Manager agent should not have tools" error)
         max_iter=8
     )
     
