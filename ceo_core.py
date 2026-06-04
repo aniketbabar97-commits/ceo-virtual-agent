@@ -480,60 +480,132 @@ def log_action(message: str, level: str = "INFO"):
         f.write(entry)
     print(entry.strip())  # Also to console for server runs
 
-def get_llm(config: Dict) -> LLM:
-    """Get LLM instance for Groq (open models, free tier) or Ollama (local free)."""
-    provider = config.get("provider", "groq").lower()
-    api_key = config.get("api_key", "")
-    model = config.get("model", "llama-3.3-70b-versatile")
-    
+def _create_llm_for_provider(provider: str, api_key: str, model: str, config: Dict) -> LLM:
+    """Helper to create LLM for a specific provider with proper model string and failsafe for cache issues."""
+    provider = provider.lower()
+    base_url = config.get("ollama_base_url", "http://localhost:11434")
+
+    # Ensure drop_params to avoid Groq-style cache_breakpoint errors on many providers
+    try:
+        import litellm
+        litellm.drop_params = True
+    except:
+        pass
+
     if provider == "groq":
         if not api_key:
-            raise ValueError("Groq API key required. Get free at groq.com")
-        
-        # Global drop_params at top of file + explicit here for max compatibility
-        try:
-            import litellm
-            litellm.drop_params = True
-        except:
-            pass
-        
-        # Primary attempt
-        try:
-            return LLM(
-                model=f"groq/{model}",
-                api_key=api_key,
-                temperature=0.4,
-                max_tokens=4000,
-                # Extra hint for litellm to drop bad params
-                drop_params=True
-            )
-        except Exception as e:
-            error_msg = str(e).lower()
-            if "cache_breakpoint" in error_msg or "unsupported" in error_msg:
-                log_action("Groq cache_breakpoint issue detected despite drop_params - using ultra-minimal LLM config as failsafe", "WARN")
-                # Ultra minimal retry - this often bypasses the cache feature entirely
-                return LLM(
-                    model=f"groq/{model}",
-                    api_key=api_key,
-                    temperature=0.4,
-                    max_tokens=3000  # Slightly lower to reduce context issues
-                )
-            # For rate limits or other, just re-raise so the cycle's failsafe catches it gracefully
-            raise
+            raise ValueError("Groq API key required for primary provider.")
+        model_str = f"groq/{model}"
+        return LLM(
+            model=model_str,
+            api_key=api_key,
+            temperature=0.4,
+            max_tokens=4000,
+            drop_params=True
+        )
+
     elif provider == "ollama":
-        # User must have ollama running locally or on server
         ollama_model = model if model else "llama3.2:3b"
         return LLM(
             model=f"ollama/{ollama_model}",
-            base_url=config.get("ollama_base_url", "http://localhost:11434"),
+            base_url=base_url,
             temperature=0.4,
             max_tokens=4000
         )
-    else:
-        raise ValueError(f"Unknown provider: {provider}. Use 'groq' or 'ollama'.")
 
-    # Failsafe: If we reach here with Groq having issues, we could add more fallbacks here in future
-    # For now, the per-provider try blocks above handle Groq-specific cache issues.
+    elif provider in ["together_ai", "together"]:
+        # Good open-source: Llama, Mixtral, etc. Free tier/credits often available
+        model_str = f"together_ai/meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo" if "llama" in model.lower() else f"together_ai/{model}"
+        return LLM(
+            model=model_str,
+            api_key=api_key or os.environ.get("TOGETHER_API_KEY", ""),
+            temperature=0.4,
+            max_tokens=4000,
+            drop_params=True
+        )
+
+    elif provider in ["fireworks_ai", "fireworks"]:
+        model_str = f"fireworks_ai/llama-v3-70b-instruct" if "llama" in model.lower() else f"fireworks_ai/{model}"
+        return LLM(
+            model=model_str,
+            api_key=api_key or os.environ.get("FIREWORKS_API_KEY", ""),
+            temperature=0.4,
+            max_tokens=4000,
+            drop_params=True
+        )
+
+    elif provider in ["deepinfra", "deep_infra"]:
+        model_str = f"deepinfra/meta-llama/Meta-Llama-3.1-70B-Instruct" if "llama" in model.lower() else f"deepinfra/{model}"
+        return LLM(
+            model=model_str,
+            api_key=api_key or os.environ.get("DEEPINFRA_API_KEY", ""),
+            temperature=0.4,
+            max_tokens=4000,
+            drop_params=True
+        )
+
+    elif provider == "gemini":
+        # Google's free tier for gemini-1.5-flash (good open weights-ish)
+        model_str = "gemini/gemini-1.5-flash"
+        return LLM(
+            model=model_str,
+            api_key=api_key or os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", ""),
+            temperature=0.4,
+            max_tokens=4000,
+            drop_params=True
+        )
+
+    elif provider == "huggingface":
+        model_str = f"huggingface/{model}" if not model.startswith("huggingface/") else model
+        return LLM(
+            model=model_str,
+            api_key=api_key or os.environ.get("HUGGINGFACE_API_KEY", ""),
+            temperature=0.4,
+            max_tokens=4000,
+            drop_params=True
+        )
+
+    else:
+        # Default to ollama style for unknown open source
+        return LLM(
+            model=f"{provider}/{model}",
+            api_key=api_key,
+            temperature=0.4,
+            max_tokens=4000,
+            drop_params=True
+        )
+
+def get_llm(config: Dict) -> LLM:
+    """Get LLM with automatic fallback to other good open-source providers if primary fails.
+    This makes the agent independent of any single provider's rate limits, tokens, or bugs (e.g. Groq cache_breakpoint).
+    There are many good open-source models available via LiteLLM (Llama3, Mixtral, Gemma, etc.).
+    """
+    primary = config.get("provider", "groq").lower()
+    api_key = config.get("api_key", "")
+    model = config.get("model", "llama-3.3-70b-versatile")
+    fallbacks = config.get("fallback_providers", ["together_ai", "fireworks_ai", "deepinfra", "gemini", "ollama"])
+
+    providers_to_try = [primary] + [p for p in fallbacks if p.lower() != primary]
+
+    last_error = None
+    for prov in providers_to_try:
+        try:
+            log_action(f"Trying LLM provider: {prov}")
+            llm = _create_llm_for_provider(prov, api_key, model, config)
+            return llm
+        except Exception as e:
+            last_error = e
+            error_str = str(e).lower()
+            log_action(f"Provider {prov} failed: {str(e)[:150]}", "WARN")
+            # Only continue to fallback on retriable/provider errors (rate, cache, key issues)
+            if any(x in error_str for x in ["rate", "limit", "cache_breakpoint", "unsupported", "invalid", "key"]):
+                continue
+            else:
+                # Non-retriable, raise immediately
+                raise
+
+    # All providers failed - graceful
+    raise RuntimeError(f"All LLM providers failed (tried: {providers_to_try}). Last error: {last_error}. Set more API keys in Render env (e.g. TOGETHER_API_KEY, GOOGLE_API_KEY) for better fallbacks. Or configure 'ollama' if running it.")
 
 def get_config() -> Dict:
     default = {
@@ -542,7 +614,10 @@ def get_config() -> Dict:
         "model": "llama-3.3-70b-versatile",
         "ollama_base_url": "http://localhost:11434",
         "autonomous_interval_minutes": 60,
-        "max_cycles_per_run": 5
+        "max_cycles_per_run": 5,
+        # Automatic fallback chain for when primary (Groq) fails due to rate limits, cache issues, tokens, etc.
+        # These are good free/open-source friendly providers via LiteLLM. Set the corresponding API key in env (e.g. TOGETHER_API_KEY).
+        "fallback_providers": ["together_ai", "fireworks_ai", "deepinfra", "gemini", "ollama"]
     }
     return load_json(CONFIG_FILE, default)
 
