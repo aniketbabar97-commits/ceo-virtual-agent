@@ -671,11 +671,12 @@ def create_ceo_crew(llm: LLM, goal: str, memory: Dict, recent_logs: str = "") ->
     )
     
     # Hierarchical Crew: CEO as manager delegates and reviews
+    # IMPORTANT: In CrewAI hierarchical mode, the manager_agent MUST NOT be in the agents list.
     crew = Crew(
-        agents=[ceo, researcher, scraper, content_creator, analyst, executor],
+        agents=[researcher, scraper, content_creator, analyst, executor],  # CEO is the manager, not in workers list
         tasks=[planning_task, research_task, deep_dive_task, content_task, analysis_task, execution_task, review_task],
         process=Process.hierarchical,
-        manager_agent=ceo,  # CEO hires and manages
+        manager_agent=ceo,  # CEO is the manager (oversees and does planning/review tasks)
         verbose=True,
         memory=False,  # We use custom persistent memory + prompt injection for reliability across providers (Groq/Ollama)
         # Custom long-term learning via append_lesson and injection in CEO prompt
